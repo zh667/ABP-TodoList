@@ -49,13 +49,15 @@ services:
     image: linqian667/todolist-api:latest
     container_name: todolist-api
     environment:
-      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__Default: "Server=mysql;Port=3306;Database=TodoListDb;User=root;Password=1234;"
-      App__SelfUrl: "http://localhost"
+      # ⭐ 容器内部通信用服务名，不能用 localhost
+      App__SelfUrl: "http://todolist-api:8080"
+      AuthServer__Authority: "http://todolist-api:8080"
+      # 浏览器访问的地址仍然用 localhost
       App__ClientUrl: "http://localhost"
       App__CorsOrigins: "http://localhost"
       App__RedirectAllowedUrls: "http://localhost"
-      AuthServer__Authority: "http://localhost/"
       AuthServer__RequireHttpsMetadata: "false"
     depends_on:
       migrator:
