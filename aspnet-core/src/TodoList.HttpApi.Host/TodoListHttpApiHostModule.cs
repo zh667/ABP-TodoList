@@ -120,7 +120,11 @@ public class TodoListHttpApiHostModule : AbpModule
     {
         var hostingEnvironment = context.Services.GetHostingEnvironment();
 
-        if (hostingEnvironment.IsDevelopment())
+        // Docker 容器内跳过物理文件替换（容器里没有源码目录）
+        // DOTNET_RUNNING_IN_CONTAINER 是 .NET 官方 Docker 镜像自动设置的环境变量
+        var isRunningInContainer = Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER") == "true";
+
+        if (hostingEnvironment.IsDevelopment() && !isRunningInContainer)
         {
             Configure<AbpVirtualFileSystemOptions>(options =>
             {
