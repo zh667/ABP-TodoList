@@ -6,7 +6,7 @@ WORKDIR /app
 
 # 先复制 package 文件以利用 Docker 缓存
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --legacy-peer-deps
 
 # 复制源代码并构建
 COPY . .

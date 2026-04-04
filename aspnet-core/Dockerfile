@@ -4,8 +4,8 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-# 先复制 sln 和 props 以利用 Docker 缓存
-COPY TodoList.sln common.props NuGet.Config ./
+# 先复制 props 和 NuGet 配置以利用 Docker 缓存
+COPY common.props NuGet.Config ./
 
 # 复制所有项目文件以还原依赖
 COPY src/TodoList.Domain.Shared/TodoList.Domain.Shared.csproj src/TodoList.Domain.Shared/
@@ -18,7 +18,8 @@ COPY src/TodoList.HttpApi.Client/TodoList.HttpApi.Client.csproj src/TodoList.Htt
 COPY src/TodoList.HttpApi.Host/TodoList.HttpApi.Host.csproj src/TodoList.HttpApi.Host/
 COPY src/TodoList.DbMigrator/TodoList.DbMigrator.csproj src/TodoList.DbMigrator/
 
-RUN dotnet restore
+RUN dotnet restore src/TodoList.HttpApi.Host/TodoList.HttpApi.Host.csproj
+RUN dotnet restore src/TodoList.DbMigrator/TodoList.DbMigrator.csproj
 
 # 复制全部源代码并发布
 COPY . .

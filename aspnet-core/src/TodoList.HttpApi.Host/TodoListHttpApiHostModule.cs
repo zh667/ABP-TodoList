@@ -5,6 +5,7 @@ using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Cors;
 using Microsoft.AspNetCore.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -60,13 +61,10 @@ public class TodoListHttpApiHostModule : AbpModule
             });
         });
 
-        if (hostingEnvironment.IsDevelopment())
+        PreConfigure<OpenIddictServerBuilder>(builder =>
         {
-            PreConfigure<OpenIddictServerBuilder>(builder =>
-            {
-                builder.UseAspNetCore().DisableTransportSecurityRequirement();
-            });
-        }
+            builder.UseAspNetCore().DisableTransportSecurityRequirement();
+        });
     }
 
     public override void ConfigureServices(ServiceConfigurationContext context)
@@ -190,6 +188,12 @@ public class TodoListHttpApiHostModule : AbpModule
     {
         var app = context.GetApplicationBuilder();
         var env = context.GetEnvironment();
+
+        // 支持反向代理 (Nginx)
+        app.UseForwardedHeaders(new ForwardedHeadersOptions
+        {
+            ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+        });
 
         if (env.IsDevelopment())
         {
