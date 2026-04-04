@@ -1,0 +1,175 @@
+<div class="card">
+  <div class="card-header">
+    <div class="row align-items-center">
+      <div class="col col-md-6">
+        <h5 class="card-title">
+          <i class="bi bi-check2-square me-2"></i>待办事项管理
+        </h5>
+      </div>
+      <div class="col col-md-6 text-end">
+        <button id="btn-create-todo" class="btn btn-primary btn-sm" type="button" (click)="openCreateModal()">
+          <i class="bi bi-plus-lg me-1"></i> 新建
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card-body">
+    <!-- Search bar -->
+    <div class="row mb-3">
+      <div class="col-12 col-md-6 col-lg-4">
+        <div class="input-group input-group-sm">
+          <input
+            type="text"
+            id="search-input"
+            class="form-control"
+            placeholder="搜索待办事项..."
+            [(ngModel)]="searchText"
+            (keyup.enter)="onSearch()"
+          />
+          <button class="btn btn-outline-secondary" type="button" (click)="onSearch()" title="搜索">
+            <i class="bi bi-search"></i>
+          </button>
+          <button
+            *ngIf="searchText"
+            class="btn btn-outline-secondary"
+            type="button"
+            (click)="clearSearch()"
+            title="清除搜索"
+          >
+            <i class="bi bi-x-lg"></i>
+          </button>
+        </div>
+      </div>
+      <div class="col-12 col-md-6 col-lg-8 text-muted small d-flex align-items-center justify-content-end">
+        共 {{ totalCount }} 条记录
+      </div>
+    </div>
+
+    <!-- Loading state -->
+    <div *ngIf="loading" class="text-center py-4">
+      <div class="spinner-border text-primary" role="status">
+        <span class="visually-hidden">加载中...</span>
+      </div>
+    </div>
+
+    <!-- Empty state -->
+    <div *ngIf="!loading && todoItems.length === 0 && !searchText" class="text-center py-5">
+      <i class="bi bi-inbox display-4 text-muted"></i>
+      <p class="text-muted mt-3">暂无待办事项，点击"新建"添加一个吧！</p>
+    </div>
+
+    <!-- No search results -->
+    <div *ngIf="!loading && todoItems.length === 0 && searchText" class="text-center py-5">
+      <i class="bi bi-search display-4 text-muted"></i>
+      <p class="text-muted mt-3">没有找到包含 "{{ searchText }}" 的待办事项</p>
+      <button class="btn btn-sm btn-outline-primary" (click)="clearSearch()">清除搜索</button>
+    </div>
+
+    <!-- Table -->
+    <div class="table-responsive" *ngIf="!loading && todoItems.length > 0">
+      <table id="todo-items-table" class="table table-hover align-middle">
+        <thead class="table-light">
+          <tr>
+            <th style="width: 60px;">状态</th>
+            <th>标题</th>
+            <th style="width: 180px;">创建时间</th>
+            <th style="width: 150px;" class="text-end">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let item of todoItems" [class.todo-completed]="item.completed">
+            <td class="text-center">
+              <button
+                class="btn btn-sm p-0 border-0"
+                [class.text-success]="item.completed"
+                [class.text-muted]="!item.completed"
+                (click)="toggleCompleted(item)"
+                [title]="item.completed ? '标记为未完成' : '标记为已完成'"
+              >
+                <i class="bi" [class.bi-check-circle-fill]="item.completed" [class.bi-circle]="!item.completed" style="font-size: 1.25rem;"></i>
+              </button>
+            </td>
+            <td>
+              <span [class.text-decoration-line-through]="item.completed" [class.text-muted]="item.completed">
+                {{ item.title }}
+              </span>
+            </td>
+            <td>
+              <small class="text-muted">{{ item.creationTime | date:'yyyy-MM-dd HH:mm' }}</small>
+            </td>
+            <td class="text-end">
+              <div class="btn-group btn-group-sm">
+                <button id="btn-edit-{{ item.id }}" class="btn btn-outline-primary" (click)="openEditModal(item)" title="编辑">
+                  <i class="bi bi-pencil"></i>
+                </button>
+                <button id="btn-delete-{{ item.id }}" class="btn btn-outline-danger" (click)="deleteTodoItem(item)" title="删除">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Pagination -->
+    <div class="d-flex justify-content-center mt-3" *ngIf="totalCount > pageSize">
+      <ngb-pagination
+        [collectionSize]="totalCount"
+        [(page)]="page"
+        [pageSize]="pageSize"
+        [maxSize]="5"
+        [rotate]="true"
+        (pageChange)="onPageChange($event)"
+      ></ngb-pagination>
+    </div>
+  </div>
+</div>
+
+<!-- Create/Edit Modal -->
+<abp-modal [(visible)]="isModalOpen" [busy]="false">
+  <ng-template #abpHeader>
+    <h3>{{ modalTitle }}</h3>
+  </ng-template>
+
+  <ng-template #abpBody>
+    <form [formGroup]="form" (ngSubmit)="save()" id="todo-item-form">
+      <div class="mb-3">
+        <label for="todo-title" class="form-label">标题 <span class="text-danger">*</span></label>
+        <input
+          type="text"
+          id="todo-title"
+          class="form-control"
+          formControlName="title"
+          placeholder="请输入待办事项标题"
+        />
+        <div *ngIf="form.get('title')?.invalid && isFormSubmitted" class="text-danger mt-1">
+          <small *ngIf="form.get('title')?.errors?.['required']">标题不能为空</small>
+          <small *ngIf="form.get('title')?.errors?.['maxlength']">标题不能超过256个字符</small>
+        </div>
+      </div>
+
+      <div class="form-check mb-3">
+        <input
+          type="checkbox"
+          id="todo-completed"
+          class="form-check-input"
+          formControlName="completed"
+        />
+        <label class="form-check-label" for="todo-completed">已完成</label>
+      </div>
+    </form>
+  </ng-template>
+
+  <ng-template #abpFooter>
+    <button type="button" class="btn btn-secondary" abpClose>取消</button>
+    <button
+      id="btn-save-todo"
+      class="btn btn-primary"
+      (click)="save()"
+    >
+      <i class="bi bi-check-lg me-1"></i>保存
+    </button>
+  </ng-template>
+</abp-modal>

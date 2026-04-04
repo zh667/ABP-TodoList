@@ -1,0 +1,39 @@
+# ===== OS =====
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ===== IDE =====
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# ===== .NET =====
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+*.nupkg
+*.snupkg
+project.lock.json
+*.nuget.props
+*.nuget.targets
+Logs/
+
+# ===== Node / Angular =====
+node_modules/
+dist/
+.angular/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ===== Docker =====
+.env
+
+# ===== Misc =====
+*.log
