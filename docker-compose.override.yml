@@ -1,0 +1,19 @@
+# ===========================================
+# 本地开发模式 (默认加载)
+# ===========================================
+# docker compose up -d  => 只启动 MySQL
+# 前后端在本地运行:
+#   dotnet run --project src\TodoList.HttpApi.Host
+#   npx ng serve --port 4200
+# ===========================================
+
+services:
+  # 只保留 MySQL，其他服务不启动
+  migrator:
+    profiles: ["full"]
+
+  api:
+    profiles: ["full"]
+
+  web:
+    profiles: ["full"]

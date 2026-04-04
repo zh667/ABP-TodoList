@@ -1,0 +1,21 @@
+# ===== Build Outputs =====
+bin/
+obj/
+Logs/
+
+# ===== IDE =====
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+
+# ===== Git =====
+.git/
+.gitignore
+.gitattributes
+
+# ===== Misc =====
+*.md
+*.log
+test/

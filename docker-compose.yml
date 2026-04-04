@@ -1,0 +1,88 @@
+# ===========================================
+# TodoList - 完整 Docker 编排
+# ===========================================
+# 使用方式:
+#   完整启动:  docker compose -f docker-compose.yml up -d
+#   仅 MySQL:  docker compose up -d  (会加载 override)
+#   查看日志:  docker compose logs -f
+#   停止:      docker compose down
+#   清除数据:  docker compose down -v
+# ===========================================
+
+services:
+  # ---------- 数据库 ----------
+  mysql:
+    image: mysql:8
+    container_name: todolist-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-1234}
+      MYSQL_DATABASE: TodoListDb
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - todolist-network
+
+  # ---------- 数据库迁移 (一次性) ----------
+  migrator:
+    build:
+      context: ./aspnet-core
+      target: migrator
+    container_name: todolist-migrator
+    environment:
+      ConnectionStrings__Default: "Server=mysql;Port=3306;Database=TodoListDb;User=root;Password=${MYSQL_ROOT_PASSWORD:-1234};"
+      OpenIddict__Applications__TodoList_App__RootUrl: "http://localhost"
+      OpenIddict__Applications__TodoList_Swagger__RootUrl: "http://localhost"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - todolist-network
+
+  # ---------- 后端 API ----------
+  api:
+    build:
+      context: ./aspnet-core
+      target: api
+    container_name: todolist-api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Default: "Server=mysql;Port=3306;Database=TodoListDb;User=root;Password=${MYSQL_ROOT_PASSWORD:-1234};"
+      App__SelfUrl: "http://localhost"
+      App__ClientUrl: "http://localhost"
+      App__CorsOrigins: "http://localhost"
+      App__RedirectAllowedUrls: "http://localhost"
+      AuthServer__Authority: "http://localhost/"
+      AuthServer__RequireHttpsMetadata: "false"
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+    networks:
+      - todolist-network
+
+  # ---------- 前端 (Nginx) ----------
+  web:
+    build:
+      context: ./angular
+    container_name: todolist-web
+    ports:
+      - "${WEB_PORT:-80}:80"
+    depends_on:
+      - api
+    networks:
+      - todolist-network
+
+volumes:
+  mysql_data:
+
+networks:
+  todolist-network:
+    driver: bridge
