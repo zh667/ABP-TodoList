@@ -30,6 +30,7 @@ using Volo.Abp.Modularity;
 using Volo.Abp.Security.Claims;
 using Volo.Abp.Swashbuckle;
 using Volo.Abp.UI.Navigation.Urls;
+using Volo.Abp.AspNetCore.Mvc.AntiForgery;
 using Volo.Abp.VirtualFileSystem;
 
 namespace TodoList;
@@ -79,6 +80,18 @@ public class TodoListHttpApiHostModule : AbpModule
         ConfigureVirtualFileSystem(context);
         ConfigureCors(context, configuration);
         ConfigureSwaggerServices(context, configuration);
+        ConfigureAntiForgery();
+    }
+
+    private void ConfigureAntiForgery()
+    {
+        // 前后端分离（Angular SPA + API）架构下，关闭 ABP 自动 antiforgery 验证
+        // API 已通过 OAuth Bearer Token 保护，不需要 CSRF cookie 验证
+        // Docker 反向代理环境下 XSRF cookie 域不匹配会导致 POST/PUT/DELETE 返回 400
+        Configure<AbpAntiForgeryOptions>(options =>
+        {
+            options.AutoValidate = false;
+        });
     }
 
     private void ConfigureAuthentication(ServiceConfigurationContext context)
