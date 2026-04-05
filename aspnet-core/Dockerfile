@@ -4,15 +4,11 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-# 安装 Node.js（ABP install-libs 需要 npm）
+# 安装 Node.js（ABP 前端资源安装需要 npm）
 RUN apt-get update && apt-get install -y curl \
     && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
-
-# 安装 ABP CLI（用于 install-libs）
-RUN dotnet tool install -g Volo.Abp.Cli
-ENV PATH="$PATH:/root/.dotnet/tools"
 
 # 先复制 props 和 NuGet 配置以利用 Docker 缓存
 COPY common.props NuGet.Config ./
@@ -34,9 +30,13 @@ RUN dotnet restore src/TodoList.DbMigrator/TodoList.DbMigrator.csproj
 # 复制全部源代码
 COPY . .
 
-# 安装 ABP 前端静态库到 wwwroot/libs（.gitignore 排除了这些文件）
-RUN cd src/TodoList.HttpApi.Host && abp install-libs
- 
+# 安装 ABP 前端静态库到 wwwroot/libs（不依赖 ABP CLI）
+# 1. npm install 下载前端依赖
+# 2. 自定义脚本读取 abp.resourcemapping.js 并复制文件到 wwwroot/libs
+RUN cd src/TodoList.HttpApi.Host \
+    && npm install \
+    && node ../../scripts/copy-abp-libs.js
+
 # 发布
 RUN dotnet publish src/TodoList.HttpApi.Host/TodoList.HttpApi.Host.csproj \
     -c Release -o /app/api --no-restore
