@@ -127,3 +127,58 @@ location / {
 | 3 | wwwroot/libs | Dockerfile 中 `npm install` + 复制脚本 |
 | 4 | Antiforgery | 前后端分离架构关闭 `AutoValidate` |
 | 5 | Nginx 代理规则 | 用正则统一代理所有 ABP 路径，SPA fallback 放最后 |
+
+
+
+按展示顺序，从核心到辅助：
+
+## 必展示（核心 4 个）
+
+| 文件 | 展示重点 |
+|------|---------|
+| **`aspnet-core/Dockerfile`** | 多阶段构建（build → api/migrator）、Node.js 安装前端资源 |
+| **`docker-compose.yml`** | 服务编排、健康检查、依赖关系、环境变量配置 |
+| **`angular/nginx.conf`** | 反向代理、正则匹配 ABP 路径、SPA fallback |
+| **`angular/Dockerfile`** | 前端多阶段构建（ng build → Nginx） |
+
+## 加分项（体现深度）
+
+| 文件 | 展示重点 |
+|------|---------|
+| **`docker-compose.hub.yml`** | 预构建镜像部署方案，说明你推过 Docker Hub |
+| **`docker-compose.override.yml`** | 本地开发模式 vs 完整 Docker 模式的切换设计 |
+| **`ABP-DOCKER-PITFALLS.md`** | 踩坑记录，展示排查和解决问题的能力 |
+| **`aspnet-core/scripts/copy-abp-libs.js`** | 自定义脚本替代 ABP CLI，展示问题解决思路 |
+
+## 代码层面（如果面试官追问）
+
+| 文件 | 展示重点 |
+|------|---------|
+| **`TodoListHttpApiHostModule.cs`** | `DOTNET_RUNNING_IN_CONTAINER` 检测、Antiforgery 配置、ForwardedHeaders |
+| **`.dockerignore`** | 优化构建上下文 |
+| **`DOCKER.md`** | 部署文档，体现工程规范 |
+
+## 展示话术建议
+
+> 先讲架构图（DOCKER.md 里有），再逐层展开：Dockerfile → docker-compose → nginx → 踩坑经验。**踩坑记录是最大亮点**，说明你不是照抄模板，而是实际调试解决过问题。
+
+
+
+`-d` 参数已经让容器在后台运行了，**关闭终端不会停止容器**。
+
+## 常用场景
+
+| 场景 | 命令 |
+|------|------|
+| **电脑重启后启动** | `docker compose -f docker-compose.yml up -d` |
+| **停止（保留数据）** | `docker compose -f docker-compose.yml down` |
+| **停止（清除数据）** | `docker compose -f docker-compose.yml down -v` |
+| **代码改了要重新构建** | `docker compose -f docker-compose.yml up --build -d` |
+| **查看运行状态** | `docker compose -f docker-compose.yml ps` |
+
+> **关键区别**：`up -d` 是直接启动已有镜像（秒级），`up --build -d` 是重新构建镜像再启动（分钟级）。没改代码的话用 `up -d` 就行。
+
+如果想让容器**开机自动启动**，可以在 docker-compose.yml 的每个服务里加：
+```yaml
+restart: unless-stopped
+```
