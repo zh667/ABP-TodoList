@@ -480,3 +480,633 @@ SharePoint + Power Platform（前端展示 + 流程审批 + 低代码应用）
 #### 如果面试官反问「你觉得你能留下来吗？」
 
 > 「我当然希望能留下来。从目前了解到的岗位内容来看，.NET 开发、数据库和 Docker 这些是我有基础的方向，SharePoint 和 SAP 集成是我想深入学习的方向。如果能有机会在实习中把这些串起来做一个完整的项目，我相信自己能达到团队的要求。」
+---
+
+## Docker 四大模块详解
+
+本项目通过 `docker-compose.yml` 编排了 4 个容器，各司其职，协同运行整个 ABP TodoList 应用。
+
+### 架构总览
+
+```
+用户浏览器 (localhost:80)
+    │
+    ▼
+┌──────────────────────────────────┐
+│  todolist-web (Nginx)            │  ← 前端容器，端口 80
+│  ├─ 静态资源 → Angular SPA       │
+│  └─ /api/* 等 → 反向代理 ────────┼──┐
+└──────────────────────────────────┘  │
+                                      ▼
+┌──────────────────────────────────┐
+│  todolist-api (.NET 8)           │  ← 后端容器，端口 8080
+│  ABP HttpApi.Host                │
+│  OpenIddict 认证服务器            │
+└───────────┬──────────────────────┘
+            │
+            ▼
+┌──────────────────────────────────┐
+│  todolist-mysql (MySQL 8)        │  ← 数据库容器，端口 3306
+│  持久化卷: mysql_data             │
+└──────────────────────────────────┘
+
+┌──────────────────────────────────┐
+│  todolist-migrator (一次性)       │  ← 迁移容器，运行完自动退出
+│  EF Core 数据库迁移 + 数据种子    │
+└──────────────────────────────────┘
+```
+
+---
+
+### 模块 1：todolist-mysql — 数据库
+
+| 属性 | 值 |
+|------|----|
+| **镜像** | `mysql:8` (官方 MySQL 8.x 镜像) |
+| **容器名** | `todolist-mysql` |
+| **端口映射** | `3306:3306` (宿主机:容器) |
+| **数据持久化** | Docker Volume `mysql_data` 挂载到 `/var/lib/mysql` |
+| **运行状态** | 常驻运行 (绿色) |
+
+**作用**：
+- 存储所有业务数据（TodoItem 表）和 ABP 框架数据（用户、权限、OpenIddict 配置等）
+- 通过 `healthcheck` 确保数据库完全就绪后，才允许 migrator 启动
+- 使用 Docker Volume 持久化数据，`docker compose down` 不会丢数据，`down -v` 才会清除
+
+**健康检查机制**：
+```yaml
+healthcheck:
+  test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p1234"]
+  interval: 10s      # 每 10 秒检查一次
+  timeout: 5s        # 超时 5 秒算失败
+  retries: 10        # 最多重试 10 次
+  start_period: 60s  # 启动后 60 秒内不算失败（给 MySQL 初始化时间）
+```
+
+---
+
+### 模块 2：todolist-migrator — 数据库迁移（一次性任务）
+
+| 属性 | 值 |
+|------|----|
+| **构建来源** | `aspnet-core/Dockerfile` 的 `migrator` 阶段 |
+| **容器名** | `todolist-migrator` |
+| **端口映射** | 无（不对外暴露端口） |
+| **运行状态** | 执行完毕后自动退出 (Exited，灰色圆圈) |
+
+**作用**：
+- 运行 EF Core 数据库迁移（`DbMigrator`），自动创建/更新数据库表结构
+- 播种初始数据（ABP 框架的默认权限、admin 用户、OpenIddict 应用配置等）
+- **一次性任务**：执行完毕后容器退出，不会持续占用资源
+
+**启动依赖**：
+```yaml
+depends_on:
+  mysql:
+    condition: service_healthy  # 等 MySQL 健康检查通过才启动
+restart: on-failure:5           # 失败最多重试 5 次
+```
+
+**为什么单独做成一个容器？**
+- **职责分离**：迁移逻辑和 API 运行逻辑解耦，各自独立
+- **启动顺序保证**：API 容器依赖 `migrator` 完成（`service_completed_successfully`），确保表结构就绪后才启动 API
+- **幂等性**：重复运行不会破坏数据，EF Core 会跳过已执行的迁移
+
+---
+
+### 模块 3：todolist-api — 后端 API 服务
+
+| 属性 | 值 |
+|------|----|
+| **构建来源** | `aspnet-core/Dockerfile` 的 `api` 阶段 |
+| **容器名** | `todolist-api` |
+| **端口映射** | 无直接映射（通过 Nginx 反向代理访问） |
+| **运行状态** | 常驻运行 (绿色) |
+
+**作用**：
+- 运行 ABP 框架的 `HttpApi.Host`，提供 RESTful API（`/api/app/todo-item` 等）
+- 充当 **OpenIddict 认证服务器**（处理 `/connect/token`、`/.well-known/openid-configuration` 等）
+- 渲染 ABP 内置的 Razor Pages（如 `/Account/Login` 登录页面）
+- 提供 Swagger API 文档（`/swagger`）
+
+**关键环境变量**：
+```yaml
+# 容器内部通信地址（用服务名，不能用 localhost！）
+App__SelfUrl: "http://todolist-api:8080"
+AuthServer__Authority: "http://todolist-api:8080"
+# 浏览器端地址（用户实际访问的地址）
+App__ClientUrl: "http://localhost"
+App__CorsOrigins: "http://localhost"
+```
+
+**启动依赖**：
+```yaml
+depends_on:
+  migrator:
+    condition: service_completed_successfully  # 等迁移完成才启动
+```
+
+**多阶段构建细节**（共用一个 Dockerfile）：
+```dockerfile
+# Build 阶段：编译 + 安装前端资源
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+# ... 还原依赖、npm install、发布
+
+# API 运行阶段：仅包含运行时
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS api
+COPY --from=build /app/api .
+ENTRYPOINT ["dotnet", "TodoList.HttpApi.Host.dll"]
+```
+
+---
+
+### 模块 4：todolist-web — 前端 + 反向代理
+
+| 属性 | 值 |
+|------|----|
+| **构建来源** | `angular/Dockerfile` |
+| **容器名** | `todolist-web` |
+| **端口映射** | `80:80` (用户访问入口) |
+| **运行状态** | 常驻运行 (绿色) |
+
+**作用**：
+- 托管 Angular SPA 编译后的静态文件（HTML/JS/CSS）
+- 作为 **Nginx 反向代理**，将后端请求转发给 `todolist-api` 容器
+- 实现前后端统一入口（用户只需访问 `localhost:80`）
+
+**Nginx 双重职责**：
+```nginx
+# 职责 1：反向代理 — 后端路径转发到 API 容器
+location ~ ^/(api|Account|connect|\.well-known|...) {
+    proxy_pass http://api:8080;
+}
+
+# 职责 2：SPA 托管 — 前端路由 fallback
+location / {
+    try_files  / /index.html;
+}
+```
+
+**多阶段构建**：
+```dockerfile
+# Stage 1: Node.js 编译 Angular
+FROM node:20-alpine AS build
+RUN npx ng build --configuration docker
+
+# Stage 2: Nginx 运行（最终镜像非常小）
+FROM nginx:alpine
+COPY --from=build /app/dist/TodoList /usr/share/nginx/html
+```
+
+---
+
+### 四个容器的启动顺序和依赖关系
+
+```
+mysql (先启动，等待健康检查通过)
+  │
+  ▼
+migrator (MySQL 健康后启动，执行迁移，完成后退出)
+  │
+  ▼
+api (migrator 成功退出后启动)
+  │
+  ▼
+web (api 启动后启动，反向代理到 api)
+```
+
+```yaml
+# docker-compose.yml 中的依赖链
+mysql        ← healthcheck
+migrator     ← depends_on: mysql (service_healthy)
+api          ← depends_on: migrator (service_completed_successfully)
+web          ← depends_on: api
+```
+
+### 资源占用对比
+
+| 容器 | CPU | 内存 | 说明 |
+|------|-----|------|------|
+| todolist-mysql | ~1.12% | 较多 | 数据库引擎常驻内存 |
+| todolist-api | ~0.03% | 中等 | .NET 运行时，空闲时占用极低 |
+| todolist-web | ~0% | 极少 | Nginx 静态文件服务，几乎不占资源 |
+| todolist-migrator | 0% | 0 | 已退出，不占用任何资源 |
+
+
+---
+
+## 面试回答：前后端分模块详细讲解
+
+### 一句话总览
+
+这个项目本质上是一个 **ABP 标准分层单体应用**，后端按 DDD 和分层架构拆成 `Domain.Shared`、`Domain`、`Application.Contracts`、`Application`、`HttpApi`、`HttpApi.Host`、`EntityFrameworkCore`、`DbMigrator` 等模块，前端是一个 Angular SPA，再把账号、身份、租户、设置这些后台能力通过 ABP 的 Angular 模块接进来。  
+如果面试官让我讲模块，我会先讲“分层职责”，再讲“每层依赖什么”，最后再讲“一个 TodoItem 请求是怎么从前端走到数据库的”。
+
+### 后端模块怎么讲
+
+#### 1. `TodoList.Domain.Shared`
+
+**它是干嘛的**
+
+- 这是最底层的“共享领域定义层”，放所有层都能依赖、但不涉及具体实现的东西。
+- 这里通常放常量、错误码、权限名、本地化资源、模块扩展配置、全局功能开关。
+- 这个项目里就有 `TodoItemConsts`、错误码、本地化资源和模块扩展配置。
+
+**安装了哪些依赖**
+
+- `Volo.Abp.Identity.Domain.Shared`
+- `Volo.Abp.BackgroundJobs.Domain.Shared`
+- `Volo.Abp.AuditLogging.Domain.Shared`
+- `Volo.Abp.TenantManagement.Domain.Shared`
+- `Volo.Abp.FeatureManagement.Domain.Shared`
+- `Volo.Abp.PermissionManagement.Domain.Shared`
+- `Volo.Abp.SettingManagement.Domain.Shared`
+- `Volo.Abp.OpenIddict.Domain.Shared`
+- `Microsoft.Extensions.FileProviders.Embedded`
+
+**面试怎么说**
+
+“`Domain.Shared` 我把它理解成全项目的公共领域契约层。它不写数据库、不写应用服务，只负责定义统一语言，比如错误码、权限、常量和多语言资源。这样上层都能复用，而且不会产生实现层反向依赖。”
+
+#### 2. `TodoList.Domain`
+
+**它是干嘛的**
+
+- 这是核心业务层，真正放业务规则和领域对象。
+- 这个项目的核心实体是 `TodoItem`，它继承 `AggregateRoot<int>`，把标题不能为空、标题长度限制、用户 ID 必须大于 0 这些规则收在实体内部。
+- 数据种子、数据库迁移协调服务、设置定义、多租户开关等也在这一层。
+
+**安装了哪些依赖**
+
+- `Volo.Abp.Emailing`
+- `Volo.Abp.Identity.Domain`
+- `Volo.Abp.PermissionManagement.Domain.Identity`
+- `Volo.Abp.BackgroundJobs.Domain`
+- `Volo.Abp.AuditLogging.Domain`
+- `Volo.Abp.TenantManagement.Domain`
+- `Volo.Abp.FeatureManagement.Domain`
+- `Volo.Abp.SettingManagement.Domain`
+- `Volo.Abp.OpenIddict.Domain`
+- `Volo.Abp.PermissionManagement.Domain.OpenIddict`
+
+**面试怎么说**
+
+“`Domain` 层我主要放真正的业务规则。比如 `TodoItem` 不是一个纯 DTO，它自己就能保证标题不能为空、长度不能超限、用户 ID 合法。这样规则不会散落在 Controller 或前端里，而是统一收口在领域模型中。”
+
+#### 3. `TodoList.Application.Contracts`
+
+**它是干嘛的**
+
+- 这是应用层对外暴露的契约层。
+- 这里定义 DTO、应用服务接口、权限定义，核心目的是让前后端、Swagger、动态代理都能围绕一套统一契约工作。
+- 这个项目里 `ITodoItemAppService`、`CreateTodoItemDto`、`TodoItemDto`、`UpdateTodoItemStatusDto` 都在这里。
+
+**安装了哪些依赖**
+
+- `Volo.Abp.ObjectExtending`
+- `Volo.Abp.Account.Application.Contracts`
+- `Volo.Abp.Identity.Application.Contracts`
+- `Volo.Abp.PermissionManagement.Application.Contracts`
+- `Volo.Abp.TenantManagement.Application.Contracts`
+- `Volo.Abp.FeatureManagement.Application.Contracts`
+- `Volo.Abp.SettingManagement.Application.Contracts`
+
+**面试怎么说**
+
+“`Application.Contracts` 的作用是把接口定义和实现解耦。这样前端、Swagger、或者远程客户端只依赖契约，不依赖实现。ABP 的动态 API 和代理能力也是建立在这一层契约之上的。”
+
+#### 4. `TodoList.Application`
+
+**它是干嘛的**
+
+- 这是应用服务层，负责组织用例流程。
+- 它不保存底层基础设施细节，而是调用仓储、领域对象、对象映射，把业务流程串起来。
+- 这个项目里 `TodoItemAppService` 通过 `IRepository<TodoItem, int>` 完成查询、创建、更新状态和删除。
+- `TodoListApplicationAutoMapperProfile` 负责实体和 DTO 的映射。
+
+**安装了哪些依赖**
+
+- `Volo.Abp.Account.Application`
+- `Volo.Abp.Identity.Application`
+- `Volo.Abp.PermissionManagement.Application`
+- `Volo.Abp.TenantManagement.Application`
+- `Volo.Abp.FeatureManagement.Application`
+- `Volo.Abp.SettingManagement.Application`
+
+**面试怎么说**
+
+“`Application` 层我理解成用例编排层。它拿到 DTO 后，去调领域对象和仓储，把业务动作拼起来，再把结果映射成 DTO 返回。像这个项目里的 `TodoItemAppService`，其实就是典型的 CRUD 用例编排。”
+
+#### 5. `TodoList.HttpApi`
+
+**它是干嘛的**
+
+- 这是 HTTP API 定义层。
+- 它主要负责把应用契约通过 HTTP 方式对外暴露，并配置 API 层本地化。
+- 在 ABP 里，很多应用服务接口可以通过约定自动生成 API，所以这一层往往比较薄。
+
+**安装了哪些依赖**
+
+- `Volo.Abp.Account.HttpApi`
+- `Volo.Abp.Identity.HttpApi`
+- `Volo.Abp.PermissionManagement.HttpApi`
+- `Volo.Abp.TenantManagement.HttpApi`
+- `Volo.Abp.FeatureManagement.HttpApi`
+- `Volo.Abp.SettingManagement.HttpApi`
+
+**面试怎么说**
+
+“`HttpApi` 层是把应用服务发布成 Web API 的那一层。因为 ABP 支持约定式控制器，所以我自己的 Controller 很薄，更多是让应用服务自动暴露成 `/api/app/...` 接口，同时继承 ABP 的统一返回、异常处理和本地化机制。”
+
+#### 6. `TodoList.HttpApi.Host`
+
+**它是干嘛的**
+
+- 这是后端真正的启动宿主，也就是 Web 入口。
+- 它负责依赖注入容器、认证鉴权、中间件管道、Swagger、CORS、静态资源、OpenIddict 验证、主题配置。
+- `Program.cs` 和 `TodoListHttpApiHostModule` 都在这一层。
+
+**安装了哪些依赖**
+
+- `Serilog.AspNetCore`
+- `Serilog.Sinks.Async`
+- `Volo.Abp.AspNetCore.MultiTenancy`
+- `Volo.Abp.Autofac`
+- `Volo.Abp.AspNetCore.Serilog`
+- `Volo.Abp.Swashbuckle`
+- `Volo.Abp.Account.Web.OpenIddict`
+- `Volo.Abp.AspNetCore.Mvc.UI.Theme.LeptonXLite`
+
+**面试怎么说**
+
+“`HttpApi.Host` 就是整个后端的组合根。前面的 Domain、Application、EF Core 都是能力模块，但真正把这些模块装配起来、启动 ASP.NET Core、配置中间件和 Swagger 的，是 Host 层。”
+
+#### 7. `TodoList.EntityFrameworkCore`
+
+**它是干嘛的**
+
+- 这是数据访问层。
+- 负责 `DbContext`、实体映射、迁移、数据库提供程序选择。
+- 项目里 `TodoListDbContext` 既映射了自己的 `TodoItems` 表，也映射了 ABP 自带的身份、租户、权限、OpenIddict 等表。
+- 当前数据库实现是 MySQL，版本按代码配置为 `8.0.31`。
+
+**安装了哪些依赖**
+
+- `Volo.Abp.EntityFrameworkCore.MySQL`
+- `Volo.Abp.PermissionManagement.EntityFrameworkCore`
+- `Volo.Abp.SettingManagement.EntityFrameworkCore`
+- `Volo.Abp.Identity.EntityFrameworkCore`
+- `Volo.Abp.BackgroundJobs.EntityFrameworkCore`
+- `Volo.Abp.AuditLogging.EntityFrameworkCore`
+- `Volo.Abp.TenantManagement.EntityFrameworkCore`
+- `Volo.Abp.FeatureManagement.EntityFrameworkCore`
+- `Volo.Abp.OpenIddict.EntityFrameworkCore`
+- `Microsoft.EntityFrameworkCore.Tools`
+
+**面试怎么说**
+
+“`EntityFrameworkCore` 层解决的是数据持久化。它不是只存我自己的业务表，还把 ABP 各模块的表统一放进同一个 `DbContext` 里，所以身份、权限、租户、OpenIddict 和我自己的 Todo 表能在一个数据库里协同工作。”
+
+#### 8. `TodoList.DbMigrator`
+
+**它是干嘛的**
+
+- 这是独立的数据库迁移程序。
+- 主要职责是执行迁移、初始化数据库、跑数据种子。
+- 这样做的好处是 Web 宿主和数据库初始化职责分离，部署时更稳，也更适合 Docker 场景。
+
+**安装了哪些依赖**
+
+- `Serilog.Extensions.Logging`
+- `Serilog.Sinks.Async`
+- `Serilog.Sinks.File`
+- `Serilog.Sinks.Console`
+- `Microsoft.EntityFrameworkCore.Design`
+- `Microsoft.Extensions.Hosting`
+- `Volo.Abp.Autofac`
+
+**面试怎么说**
+
+“我把数据库初始化单独拆成 `DbMigrator`，因为这符合生产部署习惯。应用启动不一定要顺带建库建表，但部署时可以先跑 migrator，把迁移和种子数据处理好，再启动 API 宿主。”
+
+#### 9. `TodoList.HttpApi.Client`
+
+**它是干嘛的**
+
+- 这是 HTTP API 客户端代理层。
+- 它不是 Web 宿主必须依赖的运行模块，而是给其他 .NET 客户端或测试程序调用接口时用的。
+- 它通过 `AddHttpClientProxies` 基于契约生成远程调用代理。
+
+**安装了哪些依赖**
+
+- `AbpAccountHttpApiClientModule`
+- `AbpIdentityHttpApiClientModule`
+- `AbpPermissionManagementHttpApiClientModule`
+- `AbpTenantManagementHttpApiClientModule`
+- `AbpFeatureManagementHttpApiClientModule`
+- `AbpSettingManagementHttpApiClientModule`
+
+**面试怎么说**
+
+“这个模块更像 SDK 层。它让其他 .NET 程序可以像调本地接口一样调远程 API，这在微服务或者集成测试场景里很常见。”
+
+### 前端模块怎么讲
+
+#### 1. `AppModule`
+
+**它是干嘛的**
+
+- 前端根模块，负责启动 Angular 应用。
+- 它把 ABP Angular 生态需要的核心能力都装进来，包括环境配置、OAuth、主题、账号、身份、租户、设置和功能管理。
+
+**安装了哪些核心依赖**
+
+- `@abp/ng.core`
+- `@abp/ng.oauth`
+- `@abp/ng.account`
+- `@abp/ng.identity`
+- `@abp/ng.tenant-management`
+- `@abp/ng.setting-management`
+- `@abp/ng.theme.shared`
+- `@abp/ng.theme.lepton-x`
+- `@angular/core`
+- `@angular/router`
+- `@angular/forms`
+- `@angular/platform-browser`
+- `@angular/platform-browser-dynamic`
+
+**面试怎么说**
+
+“`AppModule` 是前端的组合根，对应后端的 Host 层。它负责把 ABP 的认证、主题、后台管理模块和 Angular 基础模块统一装配起来。”
+
+#### 2. `AppRoutingModule`
+
+**它是干嘛的**
+
+- 前端总路由模块。
+- 负责首页模块以及 ABP 自带后台模块的懒加载。
+- 当前路由里已经接了 `account`、`identity`、`tenant-management`、`setting-management`。
+
+**面试怎么说**
+
+“路由层我做成了懒加载，首页业务模块走自己的 `HomeModule`，ABP 自带的账号、身份、租户、设置也通过懒加载方式挂进来，这样结构比较清晰，也更利于后续扩展。”
+
+#### 3. `SharedModule`
+
+**它是干嘛的**
+
+- 公共 UI 和公共依赖复用层。
+- 把多个功能模块都会用到的模块统一收口，避免每个业务模块都重复导入。
+
+**目前封装了哪些依赖**
+
+- `@abp/ng.core`
+- `@abp/ng.theme.shared`
+- `@ng-bootstrap/ng-bootstrap`
+- `@ngx-validate/core`
+
+**面试怎么说**
+
+“`SharedModule` 的作用就是复用。像主题能力、下拉组件、校验组件这些横切依赖，我统一放这里，业务模块只管导入 `SharedModule` 就行。”
+
+#### 4. `HomeModule`
+
+**它是干嘛的**
+
+- 这是当前项目最核心的业务前端模块。
+- 它包含首页路由、首页组件、表单和 TodoItem 的交互逻辑。
+- 现在 Todo 的 CRUD 基本都在这个模块闭环完成。
+
+**依赖**
+
+- `SharedModule`
+- `ReactiveFormsModule`
+- `HomeRoutingModule`
+
+**面试怎么说**
+
+“这个项目当前的自定义业务主要集中在 `HomeModule`。我把它当成一个独立功能模块来做，这样将来如果再拆出用户模块、统计模块、报表模块，模式是一样的。”
+
+#### 5. `TodoApiService`
+
+**它是干嘛的**
+
+- 这是前端业务 API 服务层。
+- 它通过 `RestService` 去调用后端 `/api/app/todo-item` 相关接口。
+- 负责把 GET、POST、PUT、DELETE 这些请求封装起来，不让组件直接拼接口地址。
+
+**依赖**
+
+- `@abp/ng.core` 里的 `RestService`
+- `rxjs`
+
+**面试怎么说**
+
+“我在前端也做了一层服务抽象，组件只关心业务动作，比如获取列表、创建待办、更新状态、删除待办，具体 HTTP 请求放到 `TodoApiService` 里，这样组件会更干净。”
+
+#### 6. `HomeComponent`
+
+**它是干嘛的**
+
+- 负责页面展示和交互。
+- 用响应式表单新增 Todo，用 `ToasterService` 做反馈，用 `ConfirmationService` 做删除确认。
+- 这里属于典型的表现层逻辑，不放业务规则本身。
+
+**依赖**
+
+- `FormBuilder`
+- `Validators`
+- `ConfirmationService`
+- `ToasterService`
+- `TodoApiService`
+
+**面试怎么说**
+
+“组件层我尽量只保留 UI 交互和状态管理，比如表单校验、加载状态、删除确认、成功提示。真正的业务规则还是在后端实体和应用服务里。”
+
+#### 7. `route.provider.ts`
+
+**它是干嘛的**
+
+- 负责往 ABP 的菜单系统里动态注册首页菜单。
+- 也就是说，除了路由本身，左侧菜单项也是通过 ABP 提供的 `RoutesService` 配进去的。
+
+**面试怎么说**
+
+“ABP 前端不是只管页面跳转，还自带菜单体系。`route.provider.ts` 就是把首页菜单注册到应用布局里，让它出现在侧边栏。”
+
+### 前端依赖怎么分类说
+
+#### 1. ABP Angular 套件
+
+- `@abp/ng.core`：ABP 前端核心能力，比如环境配置、路由、HTTP、国际化。
+- `@abp/ng.oauth`：和后端 OpenIddict 对接的认证模块。
+- `@abp/ng.account`：登录、账号相关页面和配置。
+- `@abp/ng.identity`：用户、角色、身份管理页面。
+- `@abp/ng.tenant-management`：多租户管理。
+- `@abp/ng.setting-management`：系统设置管理。
+- `@abp/ng.theme.shared`、`@abp/ng.theme.lepton-x`：ABP 官方主题和布局系统。
+- `@abp/ng.components`：ABP 通用组件基础能力。
+
+#### 2. Angular 基础依赖
+
+- `@angular/core`、`@angular/common`、`@angular/router`：应用和路由基础。
+- `@angular/forms`：响应式表单。
+- `@angular/animations`：动画能力。
+- `rxjs`：异步流和订阅模型。
+- `zone.js`：Angular 变更检测运行时依赖。
+- `tslib`：TypeScript 运行时辅助库。
+
+#### 3. UI 和体验类依赖
+
+- `bootstrap-icons`：图标。
+- `@ng-bootstrap/ng-bootstrap`：Bootstrap 风格组件。
+- `@ngx-validate/core`：校验辅助。
+
+#### 4. 工程化依赖
+
+- `@angular/cli`
+- `@angular-devkit/build-angular`
+- `@angular-eslint/*`
+- `eslint`
+- `karma`
+- `jasmine`
+- `typescript`
+
+**面试怎么说**
+
+“前端依赖我会分成四类讲：第一类是 ABP 套件，解决后台系统通用能力；第二类是 Angular 基础依赖；第三类是 UI 和交互；第四类是构建、测试和规范化工具。这样面试官会觉得你的依赖不是乱装的，而是按职责分层的。”
+
+### 一个请求链路怎么讲
+
+如果面试官让你串一次完整链路，可以这样说：
+
+1. 前端 `HomeComponent` 触发新增待办。
+2. `TodoApiService` 通过 `RestService` 调用 `/api/app/todo-item`。
+3. ABP 把请求转到 `ITodoItemAppService` 对应的应用服务实现 `TodoItemAppService`。
+4. 应用服务创建 `TodoItem` 领域对象，领域对象自己校验标题和用户 ID。
+5. 应用服务通过 `IRepository<TodoItem, int>` 持久化。
+6. `EntityFrameworkCore` 的 `TodoListDbContext` 把实体映射到 MySQL 的 `AppTodoItems` 表。
+7. 返回结果后用 AutoMapper 映射成 `TodoItemDto`，再回到前端展示。
+
+### 面试时可以直接说的一段完整版
+
+“这个项目后端我采用的是 ABP 标准分层架构。最底层是 `Domain.Shared`，主要放常量、错误码、本地化资源、权限这些公共领域定义；再往上是 `Domain`，这里放真正的业务规则和实体，比如 `TodoItem` 会自己保证标题不能为空、长度不能超限；`Application.Contracts` 定义 DTO 和应用服务接口；`Application` 负责把具体用例串起来，比如增删改查 Todo；`HttpApi` 负责把应用服务暴露成接口；`HttpApi.Host` 是真正的 ASP.NET Core 启动入口，里面处理认证、Swagger、CORS 和中间件；`EntityFrameworkCore` 负责 MySQL 持久化、DbContext 和迁移；`DbMigrator` 则单独负责数据库初始化和种子数据。前端这边是 Angular SPA，`AppModule` 是根模块，负责把 ABP 的认证、主题、身份、租户、设置模块装起来；`AppRoutingModule` 负责路由和懒加载；`SharedModule` 负责公共组件复用；`HomeModule` 是当前项目的核心业务模块，页面通过 `TodoApiService` 去调后端 Todo API。整体上，这个项目业务不复杂，但它很适合展示 ABP 的模块化、分层职责和前后端解耦方式。” 
+
+### 高频追问时的补充说法
+
+#### 为什么要拆 `Application.Contracts` 和 `Application`
+
+“因为契约和实现分离后，前端、Swagger、远程客户端都只依赖契约，不依赖实现，模块边界更清晰。”
+
+#### 为什么要单独有 `HttpApi.Host`
+
+“因为 `HttpApi` 只是接口能力模块，`Host` 才是组合根。把宿主单独拆出来，启动配置、部署、Docker 化都会更清晰。”
+
+#### 为什么要单独有 `DbMigrator`
+
+“这样数据库迁移和 Web 服务启动解耦，部署时可以先迁移再起服务，失败定位也更容易。”
+
+#### 这个项目的自定义业务为什么看起来不多
+
+“因为它本身是一个 ABP 模板上扩展出来的 TodoList 示例，重点不是复杂业务，而是展示如何在 ABP 提供的身份、权限、租户、OpenIddict、设置这些基础设施上叠加自定义业务模块。”
