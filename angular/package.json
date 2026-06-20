@@ -38,7 +38,7 @@
   },
   "devDependencies": {
     "@abp/ng.schematics": "~8.3.0",
-    "@angular-devkit/build-angular": "~18.1.0",
+    "@angular-devkit/build-angular": "~21.2.16",
     "@angular-eslint/builder": "~18.1.0",
     "@angular-eslint/eslint-plugin": "~18.1.0",
     "@angular-eslint/eslint-plugin-template": "~18.1.0",
